@@ -98,24 +98,66 @@ def zero_crossing_events(data, min_length=3, min_peak=0.0, min_sum=0.0, noise_th
 
 def threshold_events(trace, threshold, adjust_times=True, baseline=0.0, omit_ends=True):
     """
-    Finds regions in a trace that cross a threshold value (as measured by distance from baseline). Returns the index, length, peak, and sum of each event.
-    Optionally adjusts index to an extrapolated baseline-crossing.
+    Finds regions in a trace that cross a threshold value (as measured by distance from baseline) and then 
+    recross threshold (bumps).  If a threshold is crossed at the end of the trace, an event may be excluded
+    or the beginning/end may be used as the the start/end of the event (depending on the value of *omit_ends*). 
+    Optionally adjusts start and end index of an event to an extrapolated baseline-crossing and calculates 
+    values. 
+
+    Parameters                                                                                                                                     
+    ==========
+    trace: *Trace* instance                            
+    threshold: float
+        algorithm checks if waveform crosses both positive and negative thresholds.  
+        i.e. if -5. is provided, the algorithm looks for places where the waveform crosses +/-5 
+    adjust_times: boolean
+        if True, move the start and end times of the event outward, estimating the zero-crossing point for the event
+    
+    Returns
+    =======
+    events: numpy structured array.  
+        An event is a region of the *Trace.data* waveform that crosses above *threshold* and then falls below threshold again
+        Referred to as a 'bump'.  There are additional criteria (not listed here) for a bump to be considered an event.    
+        Each index contains information about an event.  Fields as follows:
+        index: int
+           index of the initial crossing of the *threshold*
+      len: int
+        index length of the event
+        sum: float
+           sum of the values in the array between the start and end of the event
+        peak: float
+           peak value of event
+        peak_index: int
+           index value of the peak
+        time: float, or np.nan if timing not available
+           time of the onset of an event
+        duration: float, or np.nan if timing not available
+           length of time of the event
+        area: float, or np.nan if timing not available
+           area under the curve of the event
+        peak_time: float, or np.nan if timing not available
+           time of peak
     """
+    
     threshold = abs(threshold)
     data = trace.data
     data1 = data - baseline
     #if (hasattr(data, 'implements') and data.implements('MetaArray')):
     
-    ## find all threshold crossings
-    masks = [(data1 > threshold).astype(np.byte), (data1 < -threshold).astype(np.byte)]
+    ## find all positive and negative threshold crossings of baseline adjusted data
+    masks = [(data1 > threshold).astype(np.byte), (data1 < -threshold).astype(np.byte)] # 1 where data is [above threshold, below negative threshold]
     hits = []
     for mask in masks:
-        diff = mask[1:] - mask[:-1]
-        on_inds = list(np.argwhere(diff==1)[:,0] + 1)
-        off_inds = list(np.argwhere(diff==-1)[:,0] + 1)
+        diff = mask[1:] - mask[:-1] # -1 (or +1) when crosses from above to below threshold (or visa versa if threshold is negative). Note above threshold refers to value furthest from zero, i.e. it can be positive or negative
+        
+        on_inds = list(np.argwhere(diff==1)[:,0] + 1) #indices where crosses from below to above threshold
+        off_inds = list(np.argwhere(diff==-1)[:,0] + 1) #indices where crosses from above to below threshold
+#        import pdb; pdb.set_trace()
         if len(on_inds) == 0 or len(off_inds) == 0:
             continue
-        if off_inds[0] < on_inds[0]:
+
+        ## if there are unequal number of crossing from one direction, either remove the ends or add the appropriate initial or end index (which will be the beginning or end of the waveform)
+        if off_inds[0] < on_inds[0]:  
             if omit_ends:
                 off_inds = off_inds[1:]
                 if len(off_inds) == 0:
@@ -128,7 +170,7 @@ def threshold_events(trace, threshold, adjust_times=True, baseline=0.0, omit_end
             else:
                 off_inds.append(len(diff))
         for i in range(len(on_inds)):
-            if on_inds[i] == off_inds[i]:
+            if on_inds[i] == off_inds[i]: #if an index is "crossing in both directions" get rid of it
                 continue
             hits.append((on_inds[i], off_inds[i]))
     
@@ -168,12 +210,12 @@ def threshold_events(trace, threshold, adjust_times=True, baseline=0.0, omit_end
         if adjust_times:  ## Move start and end times outward, estimating the zero-crossing point for the event
         
             ## adjust ind1 first
-            mind = np.argmax(ev_data)
-            pdiff = abs(peak - ev_data[0])
-            if pdiff == 0:
+            mind = np.argmax(ev_data)  # max of whole trace
+            pdiff = abs(peak - ev_data[0])  # find the how high the peak is from the front of event 
+            if pdiff == 0:  
                 adj1 = 0
             else:
-                adj1 = int(threshold * mind / pdiff)
+                adj1 = int(threshold * mind / pdiff)  # (max value of whole trace)* 1/(hight of peak from first data point)
                 adj1 = min(ln, adj1)
             ind1 -= adj1
             

@@ -49,9 +49,52 @@ def rc_decay(t, tau, Vo):
     return -(Vo/tau)*np.exp(-t/tau)
 
 
-def detect_ic_evoked_spikes(trace, pulse_edges, dv2_threshold=40e3, mse_threshold=30., ui=None):
+def detect_ic_evoked_spikes(trace, 
+                            pulse_edges, 
+                            dv2_threshold=40.e3, 
+                            mse_threshold=30., 
+                            dv2_event_area=10e-6,
+                            pulse_term_bound=50.e-6,
+                            double_spike=1.e-3,
+                            ui=None):
+    """Return a dict describing an evoked spike in a patch clamp recording. Or Return None
+    if no spike is detected.
+
+    This function assumes that a square voltage pulse is used to evoke a spike
+    in a current clamp recording, and that the spike initiation occurs *during* or within a
+    short region after the stimulation pulse.  Currently, if a spike is detected in the region 
+    shortly after the stimulation pulse it is identified as a spike but the initiation index/time
+    is not resolved.
+
+    Parameters
+    ==========
+    trace: Trace instance
+        The recorded patch clamp data. The recording should be made with a brief pulse intended
+        to evoke a single spike with short latency.
+    pulse_edges: (float, float)
+        The start and end times of the stimulation pulse, relative to the timebase in *trace*.
+    dv2_threshold: float
+        Value for the second derivative of the voltage must cross to be considered as a possible spike.  
+    mse_threshold: float
+        Value used to determine if there was a spike close to the end of the stimulation pulse.  If the 
+        mean square error value of a fit to a RC voltage decay is larger than *mse_threshold* a spike
+        has happened.
+    event_area: float
+        The integral of the 'bump' in dv2 must have at least the following *dv2_event_area*. 
+    pulse_term_boundry: float
+        There are large fluxuations in v, dv, and dv2 around the time of pulse initiation
+        and termination.  *pulse_term_boundry* specifies how much time before the termination 
+        of the stimulation pulse should not be considered in the pulse window.  Spikes after this
+        point are identified by attempting to fit the dv decay to the trace that would be seen 
+        from standard RC decay (see *mse_threshold*). 
+    double_spike: float
+        time between 
+    ui: 
+        user interface for viewing spike detection
     """
-    """
+    if not isinstance(trace, Trace):
+        raise TypeError("data must be Trace instance.")
+
     if ui is not None:
         ui.clear()
         ui.console.setStack()
@@ -60,6 +103,10 @@ def detect_ic_evoked_spikes(trace, pulse_edges, dv2_threshold=40e3, mse_threshol
     assert trace.data.ndim == 1
     pulse_edges = tuple(map(float, pulse_edges))  # make sure pulse_edges is (float, float)
     
+    #---------------------------------------------------------
+    #----this is were vc and ic code diverge------------------
+    #---------------------------------------------------------
+
     # calculate derivatives within pulse window
     diff1 = trace.time_slice(*pulse_edges).diff()
     diff2 = diff1.diff()
@@ -79,32 +126,33 @@ def detect_ic_evoked_spikes(trace, pulse_edges, dv2_threshold=40e3, mse_threshol
         ui.plt3.plot(diff2.time_values, diff2.data)
         ui.plt3.addLine(y=dv2_threshold)
     
-    # for each bump in d2, either discard the event or generate spike metrics
+    # for each bump in d2vdt, either discard the event or generate 
+    # spike metrics from v and dvdt  
     spikes = []
     for ev in events2:
         total_area = ev['area']
         onset_time = ev['time']
 
         # ignore events near pulse offset
-        if abs(onset_time - pulse_edges[1]) < 50e-6:
+        if abs(onset_time - pulse_edges[1]) < pulse_term_bound:
             continue
 
         # require dv2 bump to be positive, not tiny
-        if total_area < 10e-6:
+        if total_area < dv2_event_area:
             continue
         
-        # don't double-count spikes within 1 ms
-        if len(spikes) > 0 and onset_time < spikes[-1]['onset_time'] + 1e-3:
+        # don't double-count spikes 
+        if len(spikes) > 0 and onset_time < spikes[-1]['onset_time'] + double_spike:
             continue
 
-        max_slope_window = onset_time, pulse_edges[1]-50e-6
+        max_slope_window = onset_time, pulse_edges[1] - pulse_term_bound
         max_slope_chunk = diff1.time_slice(*max_slope_window)
         if len(max_slope_chunk) == 0:
             continue
         max_slope_idx = np.argmax(max_slope_chunk.data)
         max_slope_time = max_slope_chunk.time_at(max_slope_idx)
 
-        max_slope_time, is_edge = max_time(diff1.time_slice(onset_time, pulse_edges[1] - 50e-6))
+        max_slope_time, is_edge = max_time(diff1.time_slice(onset_time, pulse_edges[1] - pulse_term_bound))
         max_slope = diff1.value_at(max_slope_time)
         # require dv/dt to be above a threshold value
         if max_slope <= 30:  # mV/ms
@@ -114,7 +162,7 @@ def detect_ic_evoked_spikes(trace, pulse_edges, dv2_threshold=40e3, mse_threshol
             max_slope_time = None
             max_slope = None
         peak_time, is_edge = max_time(trace.time_slice(onset_time, pulse_edges[1] + 2e-3))
-        if is_edge != 0 or pulse_edges[1] < peak_time < pulse_edges[1] + 50e-6:
+        if is_edge != 0 or pulse_edges[1] < peak_time < pulse_edges[1] + pulse_term_bound:
             # peak is obscured by pulse edge
             peak_time = None
         
@@ -192,6 +240,11 @@ def detect_vc_evoked_spikes(trace, pulse_edges, ui=None):
     assert trace.ndim == 1
     pulse_edges = tuple(map(float, pulse_edges))  # make sure pulse_edges is (float, float)
 
+    #---------------------------------------------------------
+    #----this is were vc and ic code diverge------------------
+    #---------------------------------------------------------
+
+    # calculate derivatives within pulse window
     diff1 = trace.time_slice(pulse_edges[0], pulse_edges[1] + 2e-3).diff()
     diff2 = diff1.diff()
 
@@ -207,19 +260,23 @@ def detect_vc_evoked_spikes(trace, pulse_edges, ui=None):
 
     # look for negative bumps in second derivative
     # dv1_threshold = 1e-6
-    dv2_threshold = 0.02
+    dv2_threshold = 0.02 
     events = list(threshold_events(diff2 / dv2_threshold, threshold=1.0, adjust_times=False, omit_ends=True))
 
     if ui is not None:
         ui.plt2.plot(diff1.time_values, diff1.data)
         # ui.plt2.plot(diff1_hp.time_values, diff1.data)
         # ui.plt2.addLine(y=-dv1_threshold)
-        ui.plt3.plot(diff2.time_values, diff2.data)
-        ui.plt3.addLine(y=dv2_threshold)
+        # ui.plt3.plot(diff2.time_values, diff2.data)
+        # ui.plt3.addLine(y=dv2_threshold)
+        ui.plt3.plot(diff2.time_values, diff2.data/dv2_threshold)
+        ui.plt3.addLine(y=1)
 
     if len(events) == 0:
         return []
 
+    # for each bump in d2vdt, either discard the event or generate 
+    # spike metrics from v and dvdt
     spikes = []
     for ev in events:
         if ev['sum'] > 0 and ev['peak'] < 5. and ev['time'] < diff2.t0 + 60e-6:
