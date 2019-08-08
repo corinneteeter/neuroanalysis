@@ -96,7 +96,7 @@ def zero_crossing_events(data, min_length=3, min_peak=0.0, min_sum=0.0, noise_th
     return events
 
 
-def threshold_events(trace, threshold, adjust_times=True, baseline=0.0, omit_ends=True):
+def threshold_events(trace, threshold, adjust_times=True, baseline=0.0, omit_ends=True, debug=False):
     """
     Finds regions in a trace that cross a threshold value (as measured by distance from baseline) and then 
     recross threshold (bumps).  If a threshold is crossed at the end of the trace, an event may be excluded
@@ -117,12 +117,12 @@ def threshold_events(trace, threshold, adjust_times=True, baseline=0.0, omit_end
     =======
     events: numpy structured array.  
         An event is a region of the *Trace.data* waveform that crosses above *threshold* and then falls below threshold again
-        Referred to as a 'bump'.  There are additional criteria (not listed here) for a bump to be considered an event.    
+        Sometimes referred to as a 'bump'.  There are additional criteria (not listed here) for a bump to be considered an event.    
         Each index contains information about an event.  Fields as follows:
         index: int
            index of the initial crossing of the *threshold*
-      len: int
-        index length of the event
+        len: int
+            index length of the event
         sum: float
            sum of the values in the array between the start and end of the event
         peak: float
@@ -132,7 +132,7 @@ def threshold_events(trace, threshold, adjust_times=True, baseline=0.0, omit_end
         time: float, or np.nan if timing not available
            time of the onset of an event
         duration: float, or np.nan if timing not available
-           length of time of the event
+           duration of time of the event
         area: float, or np.nan if timing not available
            area under the curve of the event
         peak_time: float, or np.nan if timing not available
@@ -145,14 +145,35 @@ def threshold_events(trace, threshold, adjust_times=True, baseline=0.0, omit_end
     #if (hasattr(data, 'implements') and data.implements('MetaArray')):
     
     ## find all positive and negative threshold crossings of baseline adjusted data
+
+    if debug:
+        import pdb; pdb.set_trace()
+        # FYI: can't use matplot lib before debugger is on
+        # type *continue to see plot
+        import matplotlib.pyplot as mpl
+
+
     masks = [(data1 > threshold).astype(np.byte), (data1 < -threshold).astype(np.byte)] # 1 where data is [above threshold, below negative threshold]
     hits = []
     for mask in masks:
         diff = mask[1:] - mask[:-1] # -1 (or +1) when crosses from above to below threshold (or visa versa if threshold is negative). Note above threshold refers to value furthest from zero, i.e. it can be positive or negative
         
-        on_inds = list(np.argwhere(diff==1)[:,0] + 1) #indices where crosses from below to above threshold
-        off_inds = list(np.argwhere(diff==-1)[:,0] + 1) #indices where crosses from above to below threshold
-#        import pdb; pdb.set_trace()
+        # TODO: It might be a good idea to make offindexes one less so that region above threshold looks symmetrical
+        # find start and end inicies (above threshold) where waveform is above threshold
+        on_inds = list(np.argwhere(diff==1)[:,0] + 1) #where crosses from below to above threshold Note taking index after this happens
+        off_inds = list(np.argwhere(diff==-1)[:,0]) #where crosses from above to below threshold. Note taking index before this happens
+
+        if debug:
+            mpl.figure()
+            mpl.plot(data1, '.-') 
+            for on in on_inds:
+                mpl.axvline(x=on, color='g', linestyle='--')
+            for off in off_inds:
+                mpl.axvline(x=off, color='r', linestyle='--')
+            mpl.axhline(y=threshold, color='y', linestyle='--')
+            mpl.axhline(y=-threshold, color='y', linestyle='--')
+            mpl.show(block=False)
+
         if len(on_inds) == 0 or len(off_inds) == 0:
             continue
 
@@ -169,13 +190,34 @@ def threshold_events(trace, threshold, adjust_times=True, baseline=0.0, omit_end
                 on_inds = on_inds[:-1]
             else:
                 off_inds.append(len(diff))
+        
+        # Add both events above +threshold and those below -threshold to a list
         for i in range(len(on_inds)):
-            if on_inds[i] == off_inds[i]: #if an index is "crossing in both directions" get rid of it
+            
+            # remove any point where an on off is seperated by less than 2 indicies
+            if (on_inds[i] + 1) == off_inds[i]: 
                 continue
+            if (on_inds[i] - 1) == off_inds[i]: 
+                continue
+            if on_inds[i] == off_inds[i]: 
+                continue
+            
             hits.append((on_inds[i], off_inds[i]))
     
     ## sort hits  ## NOTE: this can be sped up since we already know how to interleave the events..
     hits.sort(key=lambda a: a[0])
+    if debug is True:
+        # FYI: can't use matplot lib before debugger is on
+        # type *continue to see plot
+        mpl.figure()
+        mpl.title('first round before adjustment')
+        mpl.plot(data1, '.-') 
+        for hit in hits:
+            mpl.axvline(x=hit[0], color='g', linestyle='--')
+            mpl.axvline(x=hit[1], color='r', linestyle='--')
+        mpl.axhline(y=threshold, color='y', linestyle='--')
+        mpl.axhline(y=-threshold, color='y', linestyle='--')
+        mpl.show(block=False)
     
     n_events = len(hits)
     events = np.empty(n_events, dtype=[
@@ -204,7 +246,7 @@ def threshold_events(trace, threshold, adjust_times=True, baseline=0.0, omit_end
         else:
             peak_ind = np.argmin(ev_data)
         peak = ev_data[peak_ind]
-        peak_ind += ind1
+        peak_ind += ind1 # adjust peak_ind from local event data to entire waveform
             
         #print "event %f: %d" % (xvals[ind1], ind1) 
         if adjust_times:  ## Move start and end times outward, estimating the zero-crossing point for the event
@@ -275,6 +317,18 @@ def threshold_events(trace, threshold, adjust_times=True, baseline=0.0, omit_end
     
         ## remove masked events
         events = events[mask]
+        
+        if debug:
+            mpl.figure()
+            mpl.title('adjusted')
+            mpl.plot(data1, '.-') 
+            for on in events['index']:
+                mpl.axvline(x=on, color='g', linestyle='--')
+            # for off in off_inds:
+            #     mpl.axvline(x=off, color='r', linestyle='--')
+            mpl.axhline(y=threshold, color='y', linestyle='--')
+            mpl.axhline(y=-threshold, color='y', linestyle='--')
+            mpl.show(block=False)
 
     # add in timing information if available:
     if trace.has_timing:
@@ -291,6 +345,9 @@ def threshold_events(trace, threshold, adjust_times=True, baseline=0.0, omit_end
         ev['area'] = np.nan
         ev['peak_time'] = np.nan
 
+
+    if debug:
+        pdb.set_trace()
     return events
 
 

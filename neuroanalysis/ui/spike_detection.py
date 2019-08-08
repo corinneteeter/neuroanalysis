@@ -33,13 +33,15 @@ class SpikeDetectUI(object):
 
     def show_result(self, spikes):
         for plt in [self.plt1, self.plt2, self.plt3]:
+            if not spikes:
+                continue
             for spike in spikes:
                 if spike.get('onset_time') is not None:
-                    plt.addLine(x=spike['onset_time'])
+                    plt.addLine(x=spike['onset_time'], pen='g')
                 if spike.get('max_slope_time') is not None:
                     plt.addLine(x=spike['max_slope_time'], pen='b')
                 if spike.get('peak_time') is not None:
-                    plt.addLine(x=spike['peak_time'], pen='g')
+                    plt.addLine(x=spike['peak_time'], pen='r')
 
 
 class SpikeDetectTestUi(object):
@@ -47,8 +49,7 @@ class SpikeDetectTestUi(object):
         pg.mkQApp()
 
         self.widget = pg.QtGui.QSplitter(pg.QtCore.Qt.Horizontal)
-        self.widget.resize(1600, 1000)
-
+        self.widget.resize(2000, 1000)
         self.display1 = SpikeDetectUI('expected result')
         self.display2 = SpikeDetectUI('current result')
         self.widget.addWidget(self.display1.widget)
@@ -70,7 +71,7 @@ class SpikeDetectTestUi(object):
         self.fail_btn.clicked.connect(self.fail_clicked)
 
         self.last_btn_clicked = None
-        self.widget.setSizes([400, 400, 800])
+        self.widget.setSizes([800, 800, 400])
 
     def pass_clicked(self):
         self.last_btn_clicked = 'pass'
@@ -81,6 +82,7 @@ class SpikeDetectTestUi(object):
     def user_passfail(self):
         self.widget.show()
         while True:
+            print('in user_passfail')
             pg.QtGui.QApplication.processEvents()
             last_btn_clicked = self.last_btn_clicked
             self.last_btn_clicked = None

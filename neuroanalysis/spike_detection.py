@@ -91,6 +91,22 @@ def detect_ic_evoked_spikes(trace,
         time between 
     ui: 
         user interface for viewing spike detection
+
+    Returns 
+    =======
+    spikes: dictionary
+        contains following information about spikes:
+        onset_time: float
+            Onset time of region where searching for spike. Defined as a crossing 
+            of a *threshold* or *baseline* in dv2/dt.
+        peak_time: float
+            time of spike peak
+        max_slope_time:
+            time where the voltage is changing most rapidly (i.e. dvdt = 0) 
+        peak_value: float
+            None if peak_time is None else trace.value_at(peak_time),
+        max_slope: float
+
     """
     if not isinstance(trace, Trace):
         raise TypeError("data must be Trace instance.")
@@ -101,7 +117,7 @@ def detect_ic_evoked_spikes(trace,
         ui.plt1.plot(trace.time_values, trace.data)
 
     assert trace.data.ndim == 1
-    pulse_edges = tuple(map(float, pulse_edges))  # make sure pulse_edges is (float, float)
+    pulse_edges = tuple(map(float, pulse_edges))  # confirms pulse_edges is (float, float)
     
     #---------------------------------------------------------
     #----this is were vc and ic code diverge------------------
@@ -228,6 +244,21 @@ def detect_vc_evoked_spikes(trace, pulse_edges, ui=None):
         to evoke a single spike with short latency.
     pulse_edges : (float, float)
         The start and end times of the stimulation pulse, relative to the timebase in *trace*.
+    
+    Returns 
+    =======
+    spikes: dictionary
+        contains following information about spikes:
+        onset_time: float
+            Onset time of region where searching for a spike (identified in event_detection 
+            module). Defined as a crossing of a *threshold* or *baseline* in dv2/dt.
+        peak_time: float
+            time of spike peak
+        max_slope_time:
+            time where the voltage is changing most rapidly (i.e. max or min of dvdt) 
+        peak_value: float
+            None if *peak_time* is None, else *trace.value_at(peak_time)*
+        max_slope: float
     """
     if not isinstance(trace, Trace):
         raise TypeError("data must be Trace instance.")
@@ -260,25 +291,36 @@ def detect_vc_evoked_spikes(trace, pulse_edges, ui=None):
 
     # look for negative bumps in second derivative
     # dv1_threshold = 1e-6
-    dv2_threshold = 0.02 
-    events = list(threshold_events(diff2 / dv2_threshold, threshold=1.0, adjust_times=False, omit_ends=True))
+    dv2_threshold = 0.02
+
+    #=========================================================================
+    debug = False
+    #=========================================================================
+
+    events = list(threshold_events(diff2 / dv2_threshold, 
+        threshold=1.0, adjust_times=False, omit_ends=True, debug=debug))
+
+
 
     if ui is not None:
         ui.plt2.plot(diff1.time_values, diff1.data)
         # ui.plt2.plot(diff1_hp.time_values, diff1.data)
         # ui.plt2.addLine(y=-dv1_threshold)
-        # ui.plt3.plot(diff2.time_values, diff2.data)
-        # ui.plt3.addLine(y=dv2_threshold)
-        ui.plt3.plot(diff2.time_values, diff2.data/dv2_threshold)
-        ui.plt3.addLine(y=1)
+        ui.plt3.plot(diff2.time_values, diff2.data)
+        ui.plt3.addLine(y=dv2_threshold)
+        # ui.plt3.plot(diff2.time_values, diff2.data/dv2_threshold)
+        # ui.plt3.addLine(y=1)
 
     if len(events) == 0:
         return []
 
     # for each bump in d2vdt, either discard the event or generate 
     # spike metrics from v and dvdt
+
     spikes = []
     for ev in events:
+        if np.abs(ev['sum']) <10:
+            continue
         if ev['sum'] > 0 and ev['peak'] < 5. and ev['time'] < diff2.t0 + 60e-6:
             # ignore positive bumps very close to the beginning of the trace
             continue
@@ -286,22 +328,25 @@ def detect_vc_evoked_spikes(trace, pulse_edges, ui=None):
             # ignore events that follow too soon after a detected spike
             continue
 
+        #TODO: What is this doing?
         if ev['sum'] < 0:
             onset_time = ev['peak_time']
             search_time = onset_time
         else:
             search_time = ev['time'] - 200e-6
-            onset_time = None
+            onset_time = ev['peak_time']  
 
         max_slope_rgn = diff1.time_slice(search_time, search_time + 0.5e-3)
-        max_slope_time, is_edge = min_time(max_slope_rgn)
+        max_slope_time, is_edge = min_time(max_slope_rgn) #note this is looking for min because event must be negative in VC
         max_slope = diff1.value_at(max_slope_time)
+
         if max_slope > 0:
             # actual slope must be negative at this point
             # (above we only tested the sign of the high-passed event)
             continue
         
         peak_search_rgn = trace.time_slice(max_slope_time, min(pulse_edges[1], search_time + 1e-3))
+
         if len(peak_search_rgn) == 0:
             peak = None
             peak_time = None
@@ -312,6 +357,10 @@ def detect_vc_evoked_spikes(trace, pulse_edges, ui=None):
                 peak_time = None
             else:
                 peak = trace.time_at(peak_time)
+        #============================================================================
+        if debug:
+            import pdb; pdb.set_trace()
+        #============================================================================
 
         spikes.append({
             'onset_time': onset_time,
