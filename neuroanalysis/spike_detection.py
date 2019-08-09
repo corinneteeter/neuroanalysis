@@ -109,7 +109,7 @@ def detect_ic_evoked_spikes(trace,
         max_slope: float
 
     """
-    if not isinstance(trace, Trace):
+    if not isinstance(trace, TSeries):
         raise TypeError("data must be Trace instance.")
 
     if ui is not None:
