@@ -95,6 +95,26 @@ def zero_crossing_events(data, min_length=3, min_peak=0.0, min_sum=0.0, noise_th
     
     return events
 
+def deal_unbalanced_initial_off(omit_ends, on_inds, off_inds):
+    """Deals with situation where there is an "off" crossing from above to below threshold
+    at the beginning of a trace without there first being an "on" crossing from below to above 
+    threshold.  Note that the usage of this function is looking for extreme regions
+    where a trace is below a negative threshold or above a positive threshold, thus, the 
+    sign of the trace value at *on_inds* and *off_inds* can be positive or negative
+    """
+    if not omit_ends:
+        on_inds = [0] + on_inds #prepend the edge as on on ind
+    else:
+        off_inds = off_inds[1:] #remove the off ind
+    return on_inds, off_inds
+
+def deal_unbalanced_termination_on(omit_ends, on_inds, off_inds, off_to_add):
+    if not omit_ends:
+        off_inds = off_inds + [off_to_add] #append the index of the last data point
+    else:
+        on_inds = on_inds[:-1] #remove the last on indicie
+    return on_inds, off_inds
+
 
 def threshold_events(trace, threshold, adjust_times=True, baseline=0.0, omit_ends=True, debug=False):
     """
@@ -174,22 +194,41 @@ def threshold_events(trace, threshold, adjust_times=True, baseline=0.0, omit_end
             mpl.axhline(y=-threshold, color='y', linestyle='--')
             mpl.show(block=False)
 
-        if len(on_inds) == 0 or len(off_inds) == 0:
-            continue
 
-        ## if there are unequal number of crossing from one direction, either remove the ends or add the appropriate initial or end index (which will be the beginning or end of the waveform)
-        if off_inds[0] < on_inds[0]:  
-            if omit_ends:
-                off_inds = off_inds[1:]
-                if len(off_inds) == 0:
-                    continue
-            else:
-                on_inds.insert(0, 0)
-        if off_inds[-1] < on_inds[-1]:
-            if omit_ends:
-                on_inds = on_inds[:-1]
-            else:
-                off_inds.append(len(diff))
+
+        # sometimes an event happens at the beginning of the pulse window and the trace hasn't 
+        # been able to drop below threshold because it hasn't recovered from the artifact.
+        if len(off_inds) > 0:  #if there are some off indicies
+            if len(on_inds) > 0: #and there are also on indicies
+                if on_inds[0] > off_inds[0]: #check if off happens before on
+                    on_inds, off_inds = deal_unbalanced_initial_off(omit_ends, on_inds, off_inds)
+            else: #there are no on indicies
+                on_inds, off_inds = deal_unbalanced_initial_off(omit_ends, on_inds, off_inds)
+
+        if len(on_inds) > 0:  #if there are some on indicies
+            if len(off_inds) > 0: #and there are also off indicies
+                if on_inds[-1] > off_inds[-1]: #check if off happens before on
+                    on_inds, off_inds = deal_unbalanced_termination_on(omit_ends, on_inds, off_inds, len(data1))
+            else: #there are no off indicies
+                on_inds, off_inds = deal_unbalanced_termination_on(omit_ends, on_inds, off_inds, len(data1))
+
+        # this is insufficient because it ignores when there are just off or just on
+        # not sure why this is here if haven't decided whether or not to omit ends
+        # if len(on_inds) == 0 or len(off_inds) == 0:
+        #     continue    
+        # ## if there are unequal number of crossing from one direction, either remove the ends or add the appropriate initial or end index (which will be the beginning or end of the waveform)
+        # if off_inds[0] < on_inds[0]:  
+        #     if omit_ends:
+        #         off_inds = off_inds[1:]
+        #         if len(off_inds) == 0:
+        #             continue
+        #     else:
+        #         on_inds.insert(0, 0)
+        # if off_inds[-1] < on_inds[-1]:
+        #     if omit_ends:
+        #         on_inds = on_inds[:-1]
+        #     else:
+        #         off_inds.append(len(diff))
         
         # Add both events above +threshold and those below -threshold to a list
         for i in range(len(on_inds)):
