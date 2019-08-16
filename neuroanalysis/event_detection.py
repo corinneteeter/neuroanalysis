@@ -127,9 +127,11 @@ def threshold_events(trace, threshold, adjust_times=True, baseline=0.0, omit_end
     Parameters                                                                                                                                     
     ==========
     trace: *Trace* instance                            
-    threshold: float
+    threshold: float or np.array with dimensions of *trace.data*
         algorithm checks if waveform crosses both positive and negative thresholds.  
-        i.e. if -5. is provided, the algorithm looks for places where the waveform crosses +/-5 
+        i.e. if -5. is provided, the algorithm looks for places where the waveform crosses +/-5.
+        If an array is provided the *threshold* is dynamic
+
     adjust_times: boolean
         if True, move the start and end times of the event outward, estimating the zero-crossing point for the event
     
@@ -158,10 +160,15 @@ def threshold_events(trace, threshold, adjust_times=True, baseline=0.0, omit_end
         peak_time: float, or np.nan if timing not available
            time of peak
     """
-    
-    threshold = abs(threshold)
+
+
     data = trace.data
     data1 = data - baseline
+    # convert threshold array
+    if isinstance(threshold, float):
+        threshold = np.ones(len(data)) * abs(threshold)
+
+
     #if (hasattr(data, 'implements') and data.implements('MetaArray')):
     
     ## find all positive and negative threshold crossings of baseline adjusted data
@@ -190,8 +197,8 @@ def threshold_events(trace, threshold, adjust_times=True, baseline=0.0, omit_end
                 mpl.axvline(x=on, color='g', linestyle='--')
             for off in off_inds:
                 mpl.axvline(x=off, color='r', linestyle='--')
-            mpl.axhline(y=threshold, color='y', linestyle='--')
-            mpl.axhline(y=-threshold, color='y', linestyle='--')
+            mpl.plot(threshold, color='y', linestyle='--')
+            mpl.plot(-threshold, color='y', linestyle='--')
             mpl.show(block=False)
 
 
@@ -254,8 +261,8 @@ def threshold_events(trace, threshold, adjust_times=True, baseline=0.0, omit_end
         for hit in hits:
             mpl.axvline(x=hit[0], color='g', linestyle='--')
             mpl.axvline(x=hit[1], color='r', linestyle='--')
-        mpl.axhline(y=threshold, color='y', linestyle='--')
-        mpl.axhline(y=-threshold, color='y', linestyle='--')
+        mpl.plot(threshold, color='y', linestyle='--')
+        mpl.plot(-threshold, color='y', linestyle='--')
         mpl.show(block=False)
     
     n_events = len(hits)

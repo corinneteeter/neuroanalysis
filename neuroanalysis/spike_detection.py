@@ -55,11 +55,11 @@ def detect_ic_evoked_spikes(trace,
                             dv2_threshold=40.e3, 
                             mse_threshold=30., 
                             dv2_event_area=10e-6,
-                            pulse_bounds_move=[.2e-3, 0.03e-3],  #0.03e-3 is very close to edge of artifact
+                            pulse_bounds_move=[.15e-3, 0.02e-3],  #0.03e-3 is very close to edge of artifact
                             double_spike=1.e-3,
                             ui=None,
                             artifact_width=.1e-3,
-                            dv_threshold = 85. 
+                            dv_thresholds = [125., 15.] #130 is too high 
                             ):
     """Return a dict describing an evoked spike in a patch clamp recording. Or Return None
     if no spike is detected.
@@ -99,6 +99,8 @@ def detect_ic_evoked_spikes(trace,
     artifact_width:
         amount of time that should be not considered for spike metrics after the pulse search window,
         i.e. pulse_edges[1] + pulse_bounds_move[1]
+    dv_thresholds: [float, float]
+        *dv_thresholds[0]* (*dv_thresholds[1]*) threshold for potential spike at beginning (end) of pulse window.
 
     Returns 
     =======
@@ -143,7 +145,9 @@ def detect_ic_evoked_spikes(trace,
     for edge in pulse_edges:
         apply_cos_mask(diff2, center=edge + 200e-6, radius=400e-6, power=2)
 
+
     # low pass filter the second derivative
+    diff1 = bessel_filter(diff1, 10e3, order=4, bidir=True)
     diff2 = bessel_filter(diff2, 10e3, order=4, bidir=True)
 
     # # # look for positive bumps in second derivative
@@ -158,6 +162,10 @@ def detect_ic_evoked_spikes(trace,
     # max_dv_in_pulse = diff1.value_at(mip)
     # dv_threshold = max_dv_in_pulse/3.
 
+    thresh_start=125
+    thresh_end=15
+
+    dv_threshold = dv_thresholds[0] - (dv_thresholds[0] - dv_thresholds[1])/len(diff1.data)  * np.arange(len(diff1.data))
     events1 = list(threshold_events(diff1, 
                                     threshold=dv_threshold, 
                                     adjust_times=False, 
@@ -166,7 +174,7 @@ def detect_ic_evoked_spikes(trace,
 
     if ui is not None:
         ui.plt2.plot(diff1.time_values, diff1.data)
-        ui.plt2.addLine(y=dv_threshold)
+        ui.plt2.plot(diff1.time_values, dv_threshold, pen='y')
         ui.plt3.plot(diff2.time_values, diff2.data)
     
     # for each bump in d2vdt, either discard the event or generate 
@@ -210,12 +218,15 @@ def detect_ic_evoked_spikes(trace,
         # require dv/dt to be above a threshold value
 
         #TODO: currently this is repetitive
-        if max_slope <= 30:  # mV/ms
+        # if max_slope <= 30:  # mV/ms
+        #     continue
+        if is_edge ==-1:
+            #if it is an edge at the beginning V is most likely just increasing from pulse initiation  
             continue
         #this should only happen at the end of pulse window since we are looking at dvdt in events
-        if is_edge != 0:
-            # can't see max slope
+        if is_edge == 1:
             slope_hit_boundry = True
+            # can't see max slope
             # max_slope_time = None
             # max_slope = None
             peak_time = None # slope cant be found either can peak, will look below
@@ -236,12 +247,14 @@ def detect_ic_evoked_spikes(trace,
             'max_slope': max_slope,
         })
 
+
     # check for evidence of spike in the decay after the pulse if
     #1. there are no previous spikes in the trace. Note this is specifically here so don't get an error from spikes[-1] if it is empty
     #2. there are no previous spikes within 1 ms of the boundry
-    #3. there a potential spike was found but it appears to have straddled the end of the pulse
+    #3. there a potential spike was found but a clear max slope was not found because it is hitting window boundry (set where 
+    #   artifact begins). However, if the max_slope is > 80 it is likely that it is too fast to see it in decay so use current values
     # TODO: not quite sure it is flushed out yet
-    if (len(spikes) == 0) or slope_hit_boundry or (spikes[-1]['max_slope_time'] < (window_edges[1] - double_spike)): #last spike is more than 1 ms before end
+    if (len(spikes) == 0) or (slope_hit_boundry and (spikes[-1]['max_slope'] < 80.)) or (spikes[-1]['max_slope_time'] < (window_edges[1] - double_spike)): #last spike is more than 1 ms before end
 
         dv_after_pulse = trace.time_slice(window_edges[1] + artifact_width, None).diff() #note this is removing an area around the temination artifact
         dv_after_pulse = bessel_filter(dv_after_pulse, 15e3, bidir=True)
@@ -284,12 +297,13 @@ def detect_ic_evoked_spikes(trace,
                 if slope_is_edge and slope_hit_boundry: 
                     # check if the slope before the artifact was larger than after the artifact
                     if spikes[-1]['max_slope'] > max_slope:  
+                        # set values to the values before artifact
                         onset_time = spikes[-1]['onset_time'] # set the onset to be before the artifact 
                         peak_time = spikes[-1]['peak_time']
                         peak_value = spikes[-1]['peak_value']
                         max_slope = spikes[-1]['max_slope']
                         max_slope_time = spikes[-1]['max_slope_time']
-                        spikes.pop(-1) # get rid of the last values for spike because they will be updated
+                    spikes.pop(-1) # get rid of the last values for spike because they will be updated
 
                 # if there is an obvous minimum after the artifact and there is a previous value in the spike array that hit a boundry
                 elif slope_hit_boundry and not slope_is_edge: 
