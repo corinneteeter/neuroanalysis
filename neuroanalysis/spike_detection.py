@@ -75,7 +75,7 @@ def detect_ic_evoked_spikes(trace,
         to evoke a single spike with short latency.
     pulse_edges: (float, float)
         The start and end times of the stimulation pulse, relative to the timebase in *trace*.
-     mse_threshold: float
+    mse_threshold: float
         Value used to determine if there was a spike close to the end of the stimulation pulse.  If the 
         mean square error value of a fit to a RC voltage decay is larger than *mse_threshold* a spike
         has happened.
@@ -89,12 +89,13 @@ def detect_ic_evoked_spikes(trace,
         Spikes after the termination of the search window are identified by attempting to fit the dv decay 
         to the trace that would be seen from standard RC decay (see *mse_threshold*). 
     double_spike: float
-        time between 
+        time allowed between two events
     ui: 
         user interface for viewing spike detection
     artifact_width:
         amount of time that should be not considered for spike metrics after the pulse search window,
-        i.e. pulse_edges[1] + pulse_bounds_move[1]
+        i.e. pulse_edges[1] + pulse_bounds_move[1] + artifact_width is the first point where a spike 
+        is searched for after the stimulation pulse
     dv_thresholds: [float, float]
         *dv_thresholds[0]* (*dv_thresholds[1]*) threshold for potential spike at beginning (end) of pulse window.
 
@@ -104,15 +105,18 @@ def detect_ic_evoked_spikes(trace,
         contains following information about spikes:
         onset_time: float
             Onset time of region where searching for spike. Defined as a crossing 
-            of a *threshold* or *baseline* in dv2/dt.
-        peak_time: float
+            of a *threshold* in dv2/dt.
+        peak_time: float or None
             time of spike peak
-        max_slope_time:
-            time where the voltage is changing most rapidly (i.e. dvdt = 0) 
-        peak_value: float
-            None if peak_time is None else trace.value_at(peak_time),
-        max_slope: float
-
+        max_slope_time: float (required output)
+            time where the voltage is changing most rapidly (i.e. dvdt = 0). Note that 
+            a time during the artifact will never be chosen. The boundry with the largest
+            slope will be used. Any error due to this estimate will not be  
+            larger than the *artifact_width*.
+        peak_value: float or None
+            None or value at *peak_time*
+        max_slope: float or None
+            Value at *max_slope_time*
     """
     if not isinstance(trace, TSeries):
         raise TypeError("data must be Trace instance.")
@@ -281,7 +285,7 @@ def detect_ic_evoked_spikes(trace,
                 'peak_time': peak_time,
                 'peak_value':peak_value,
                 'max_slope': max_slope
-                })
+            })
         
         else:
             # there is no spike found from the decay 
@@ -299,6 +303,7 @@ def detect_ic_evoked_spikes(trace,
 def detect_vc_evoked_spikes(trace,
                             pulse_edges,
                             pulse_bounds_move=[.1e-3, 0.02e-3],  #0.03e-3 sometimes gets some artifact
+                            dv2_threshold=.02,
                             ui=None):
     """Return a dict describing an evoked spike in a patch clamp recording, or None if no spike is detected.
 
@@ -313,6 +318,9 @@ def detect_vc_evoked_spikes(trace,
         to evoke a single spike with short latency.
     pulse_edges : (float, float)
         The start and end times of the stimulation pulse, relative to the timebase in *trace*.
+    pulse_bounds_move: np.array; [float, float]                                                                          
+        There are large fluxuations in v, dv, and dv2 around the time of pulse initiation                                
+        and termination.  *pulse_bounds_move* specifies how much time after the edges of the                                     stimulation pulse should be considered in the search window. *pulse_bounds_move[0]* is added to                          stimulation pulse initiation, *pulse_bounds_move[1]* is added to stimulation pulse termination.
     ui:                                                                                                                            
         user interface for viewing spike detection 
     
@@ -352,41 +360,24 @@ def detect_vc_evoked_spikes(trace,
 
     # crop and low pass filter the second derivative
     diff2 = diff2.time_slice(pulse_edges[0] + 150e-6, pulse_edges[1])
-    # mask out pulse artifacts in diff2 before lowpass filtering
-    #for edge in pulse_edges:
-    #   apply_cos_mask(diff2, center=edge + 100e-6, radius=400e-6, power=2)
     diff2 = bessel_filter(diff2, 10e3, order=4, bidir=True)
-    # chop off ending transient
-    diff2 = diff2.time_slice(None, diff2.t_end)
 
     # look for negative bumps in second derivative
-    # dv1_threshold = 1e-6
-    dv2_threshold = 0.02
-
-    #=========================================================================
-    debug = False
-    #=========================================================================
-
     events = list(threshold_events(diff2 / dv2_threshold, 
-        threshold=1.0, adjust_times=False, omit_ends=True, debug=debug))
+                                   threshold=1.0, adjust_times=False, omit_ends=True, debug=False))
 
 
 
     if ui is not None:
         ui.plt2.plot(diff1.time_values, diff1.data)
-        # ui.plt2.plot(diff1_hp.time_values, diff1.data)
-        # ui.plt2.addLine(y=-dv1_threshold)
         ui.plt3.plot(diff2.time_values, diff2.data)
         ui.plt3.addLine(y=dv2_threshold)
-        # ui.plt3.plot(diff2.time_values, diff2.data/dv2_threshold)
-        # ui.plt3.addLine(y=1)
 
     if len(events) == 0:
         return []
 
     # for each bump in d2vdt, either discard the event or generate 
     # spike metrics from v and dvdt
-
     spikes = []
     for ev in events:
         if np.abs(ev['sum']) < 2.:
@@ -397,15 +388,6 @@ def detect_vc_evoked_spikes(trace,
         if len(spikes) > 0 and ev['peak_time'] < spikes[-1]['max_slope_time'] + 1e-3:
             # ignore events that follow too soon after a detected spike
             continue
-
-        #TODO: What is this doing?
-        # if ev['sum'] < 0:
-        #     onset_time = ev['peak_time']
-        #     search_time = onset_time
-        # else:
-        #     search_time = ev['time'] - 200e-6
-        #     onset_time = ev['peak_time']  
-
         if ev['sum'] < 0:
             # only accept positive bumps
             continue
