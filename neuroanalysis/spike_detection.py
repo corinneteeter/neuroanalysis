@@ -52,7 +52,6 @@ def rc_decay(t, tau, Vo):
 
 def detect_ic_evoked_spikes(trace, 
                             pulse_edges, 
-                            dv2_threshold=40.e3, 
                             mse_threshold=30., 
                             dv2_event_area=10e-6,
                             pulse_bounds_move=[.15e-3, 0.02e-3],  #0.03e-3 sometimes gets some artifact
@@ -134,9 +133,17 @@ def detect_ic_evoked_spikes(trace,
 
     # calculate derivatives within pulse window
     diff1 = trace.time_slice(window_edges[0], window_edges[1]).diff()
-    diff2 = diff1.diff() # note that this isnt actually used for anything other than plotting
+
+    # note that this isnt actually used for anything other than plotting
+    diff2 = diff1.diff() 
+    # mask out pulse artifacts in diff2 before lowpass filtering
+    for edge in pulse_edges:
+        apply_cos_mask(diff2, center=edge + 100e-6, radius=400e-6, power=2)
 
     # low pass filter the second derivative
+    diff2 = bessel_filter(diff2, 10e3, order=4, bidir=True)
+    # low pass filter the second derivative
+    
     diff1 = bessel_filter(diff1, 10e3, order=4, bidir=True)
 
     # create a linear threshold
@@ -166,13 +173,6 @@ def detect_ic_evoked_spikes(trace,
         # don't double-count spikes 
         if len(spikes) > 0 and onset_time < spikes[-1]['onset_time'] + double_spike:
             continue
-
-#        max_slope_window = onset_time, window_edges[1] 
-#        max_slope_chunk = diff1.time_slice(*max_slope_window)
-#        if len(max_slope_chunk) == 0:
-#            continue
-#        max_slope_idx = np.argmax(max_slope_chunk.data)
-#        max_slope_time = max_slope_chunk.time_at(max_slope_idx)
 
         #max slope must be within the event.
         max_slope_time, is_edge = max_time(diff1.time_slice(onset_time, min(onset_time + ev['duration'] + diff1.dt, window_edges[1]))) #window edges will not be relevant if the duration is used
@@ -210,11 +210,11 @@ def detect_ic_evoked_spikes(trace,
        detected in the decay.  If the slope is not > 80 it checks to see if the max slope after the artifact is also a boundry, if it is 
        it takes the largest value of the two, if not it replaces the last spike with new values
     """    
-if (len(spikes) == 0) or (slope_hit_boundry and (spikes[-1]['max_slope'] < 80.)) or (spikes[-1]['max_slope_time'] < (window_edges[1] - double_spike)): #last spike is more than 1 ms before end
+    if (len(spikes) == 0) or (slope_hit_boundry and (spikes[-1]['max_slope'] < 80.)) or (spikes[-1]['max_slope_time'] < (window_edges[1] - double_spike)): #last spike is more than 1 ms before end
 
         #TODO: resolve different trace types and filtering
         dv_after_pulse = trace.time_slice(window_edges[1] + artifact_width, None).diff() #taking non filtered data
-        dv_after_pulse = bessel_filter(dv_after_pulse, 15e3, bidir=True) #and then filtering it again
+        dv_after_pulse = bessel_filter(dv_after_pulse, 15e3, bidir=True) #does this really need a different filtering
 
         # create a vector to fit
         ttofit = dv_after_pulse.time_values  # setting time to start at zero, note: +1 because time trace of derivative needs to be one shorter
@@ -234,14 +234,12 @@ if (len(spikes) == 0) or (slope_hit_boundry and (spikes[-1]['max_slope'] < 80.))
 
         # there is a spike, so identify paramters
         if mse > mse_threshold:
-            
-            #TODO not sure these pulse edges make sense: should they be window edges
-            search_window = 2e-3 #this is arbitrary but should be long enough to detect and max slopes and peak from a spike
             onset_time = window_edges[1] + artifact_width
-            max_slope_time, slope_is_edge = max_time(dv_after_pulse.time_slice(onset_time, onset_time + search_window))
+            max_slope_time, slope_is_edge = max_time(dv_after_pulse.time_slice(onset_time, onset_time + 0.5e-3)) #can't search far out because slope might have dropped and then peak will be found far away.
             max_slope = dv_after_pulse.value_at(max_slope_time)
-            peak_time, peak_is_edge = max_time(dv_after_pulse.time_slice(max_slope_time or window_edges[1] + artifact_width, window_edges[1] + search_window))
+            peak_time, peak_is_edge = max_time(trace.time_slice(max_slope_time,  max_slope_time + 1e-3))
             peak_value = dv_after_pulse.value_at(peak_time)
+#            import pdb; pdb.set_trace()
             if peak_is_edge != 0:
                 peak_time = None
                 peak_value = None
@@ -298,7 +296,10 @@ if (len(spikes) == 0) or (slope_hit_boundry and (spikes[-1]['max_slope'] < 80.))
     return spikes
 
 
-def detect_vc_evoked_spikes(trace, pulse_edges, ui=None):
+def detect_vc_evoked_spikes(trace,
+                            pulse_edges,
+                            pulse_bounds_move=[.1e-3, 0.02e-3],  #0.03e-3 sometimes gets some artifact
+                            ui=None):
     """Return a dict describing an evoked spike in a patch clamp recording, or None if no spike is detected.
 
     This function assumes that a square voltage pulse is used to evoke an unclamped spike
@@ -312,6 +313,8 @@ def detect_vc_evoked_spikes(trace, pulse_edges, ui=None):
         to evoke a single spike with short latency.
     pulse_edges : (float, float)
         The start and end times of the stimulation pulse, relative to the timebase in *trace*.
+    ui:                                                                                                                            
+        user interface for viewing spike detection 
     
     Returns 
     =======
@@ -337,23 +340,22 @@ def detect_vc_evoked_spikes(trace, pulse_edges, ui=None):
         ui.plt1.plot(trace.time_values, trace.data)
 
     assert trace.ndim == 1
-    pulse_edges = tuple(map(float, pulse_edges))  # make sure pulse_edges is (float, float)
-
-    #---------------------------------------------------------
-    #----this is were vc and ic code diverge------------------
-    #---------------------------------------------------------
-
+    pulse_edges = np.array(tuple(map(float, pulse_edges)))  # make sure pulse_edges is (float, float)
+    window_edges = pulse_edges + pulse_bounds_move
+    
     # calculate derivatives within pulse window
-    diff1 = trace.time_slice(pulse_edges[0], pulse_edges[1] + 2e-3).diff()
+    diff1 = trace.time_slice(window_edges[0], window_edges[1]).diff()
     diff2 = diff1.diff()
 
     # crop and filter diff1
-    diff1 = diff1.time_slice(pulse_edges[0] + 100e-6, pulse_edges[1])
     diff1 = bessel_filter(diff1, cutoff=20e3, order=4, btype='low', bidir=True)
 
     # crop and low pass filter the second derivative
     diff2 = diff2.time_slice(pulse_edges[0] + 150e-6, pulse_edges[1])
-    diff2 = bessel_filter(diff2, 20e3, order=4, bidir=True)
+    # mask out pulse artifacts in diff2 before lowpass filtering
+    #for edge in pulse_edges:
+    #   apply_cos_mask(diff2, center=edge + 100e-6, radius=400e-6, power=2)
+    diff2 = bessel_filter(diff2, 10e3, order=4, bidir=True)
     # chop off ending transient
     diff2 = diff2.time_slice(None, diff2.t_end)
 
