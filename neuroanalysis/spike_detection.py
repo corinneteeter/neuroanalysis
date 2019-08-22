@@ -155,8 +155,7 @@ def detect_ic_evoked_spikes(trace,
     events1 = list(threshold_events(diff1, 
                                     threshold=dv_threshold, 
                                     adjust_times=False, 
-                                    omit_ends=False,
-                                    debug=False))
+                                    omit_ends=False))
 
     if ui is not None:
         ui.plt2.plot(diff1.time_values, diff1.data)
@@ -169,6 +168,10 @@ def detect_ic_evoked_spikes(trace,
 
     slope_hit_boundry = False
     for ev in events1:
+        # require 3 indexes are above threshold
+        if ev['len'] < 3:
+            continue
+        # require events to be positive
         if ev['sum'] < 0:
             continue
 
@@ -364,8 +367,7 @@ def detect_vc_evoked_spikes(trace,
 
     # look for negative bumps in second derivative
     events = list(threshold_events(diff2 / dv2_threshold, 
-                                   threshold=1.0, adjust_times=False, omit_ends=True, debug=False))
-
+                    threshold=1.0, adjust_times=False, omit_ends=True))
 
 
     if ui is not None:
@@ -380,6 +382,10 @@ def detect_vc_evoked_spikes(trace,
     # spike metrics from v and dvdt
     spikes = []
     for ev in events:
+        # require 3 indexes are above threshold
+        if ev['len'] < 3:
+            continue
+        # require events to be positive
         if np.abs(ev['sum']) < 2.:
             continue
         if ev['sum'] > 0 and ev['peak'] < 5. and ev['time'] < diff2.t0 + 60e-6:
